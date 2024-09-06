@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Forest Health Monitoring</title>
+
+  <style>
+    html,
+    body,
+    #viewDiv {
+      padding: 0;
+      margin: 0;
+      height: 100%;
+      width: 100%;
+    }
+
+    #timeSlider {
+      position: absolute;
+      left: 5%;
+      right: 5%;
+      bottom: 20px;
+    }
+
+    .custom-legend {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: white;
+      padding: 10px;
+      border: 1px solid #ccc;
+      z-index: 1;
+      /* Ensure it is above other elements but not overriding widgets */
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+
+    .legend-color {
+      width: 20px;
+      height: 20px;
+      margin-right: 10px;
+    }
+  </style>
+
+  <link rel="stylesheet" href="https://js.arcgis.com/4.30/esri/themes/light/main.css" />
+
+  <script src="https://js.arcgis.com/4.30/"></script>
+
+  <script>
+    require([
+      "esri/Map",
+      "esri/views/MapView",
+      "esri/layers/ImageryLayer",
+      "esri/layers/support/rasterFunctionUtils",
+      "esri/layers/support/RasterFunction",
+      "esri/layers/FeatureLayer",
+      "esri/widgets/Legend",
+      "esri/widgets/Expand",
+      "esri/widgets/TimeSlider"
+    ], function (Map, MapView, ImageryLayer, rasterFunctionUtils, RasterFunction, FeatureLayer, Legend, Expand, TimeSlider) {
+
+      // NDVI Raster Function
+      const ndviRF = rasterFunctionUtils.bandArithmeticNDVI({
+        nirBandId: 8,
+        redBandId: 4,
+        scientificOutput: true
+      });
+
+      // Remap Raster Function
+      let remapRF = new RasterFunction();
+      remapRF.functionName = "Remap";
+      remapRF.functionArguments = {
+        InputRanges: [-1, 0, 0, 0.33, 0.33, 0.66, 0.66, 1],
+        OutputValues: [0, 1, 2, 3],
+        Raster: ndviRF  // Apply remap to NDVI function
+      };
+
+      // Colormap Function
+      const colorRF = new RasterFunction({
+        functionName: "Colormap",
+        functionArguments: {
+          colormap: [
+            [0, 250, 0, 0],
+            [1, 253, 231, 0],
+            [2, 1, 255, 31],
+            [3, 1, 108, 31]
+          ],
+          raster: remapRF
+        },
+        outputPixelType: "U8"
+      });
+
+      // Imagery Layer with raster functions
+      const imagery = new ImageryLayer({
+        url: "https://remotesensing.imagery.esri.com/image/rest/services/Forest_Health/ImageServer",
+        rasterFunction: colorRF,
+        //definitionExpression: "TargetDates = 1", // Filter by the TargetDates field
+        visible: true
+      });
+
+      // Feature Layers
+      const cut_block = new FeatureLayer({
+        url: "https://remotesensing.imagery.esri.com/server/rest/services/Hosted/Cut_Block_all_BC/FeatureServer"
+      });
+
+      const all_beetles = new FeatureLayer({
+        url: "https://remotesensing.imagery.esri.com/server/rest/services/Hosted/pest_infestation_poly__All_beetles_2021_/FeatureServer"
+      });
+
+      const pine_beetles = new FeatureLayer({
+        url: "https://remotesensing.imagery.esri.com/server/rest/services/Hosted/pest_infestation_poly__Mt_Pine_Beetle_2008_/FeatureServer"
+      });
+
+      // Create Map
+      const map = new Map({
+        basemap: "satellite",
+        layers: [imagery, cut_block, all_beetles, pine_beetles]
+      });
+
+      // Create MapView
+      const view = new MapView({
+        container: "viewDiv",
+        map: map,
+        zoom: 10,
+        center: [-120.4, 56.5]
+      });
+
+
+      // Add Legend
+      const legend = new Legend({ view: view });
+      const legendExpand = new Expand({
+        view: view,
+        content: legend
+      });
+      view.ui.add(legendExpand, "top-left");
+
+      // Custom Legend HTML for NDVI
+      const legendHTML = `
+        <div class="custom-legend">
+          <div class="legend-item">
+            <div class="legend-color" style="background-color: rgba(250, 0, 0, 1);"></div>
+            <div>Low Vegetation</div>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color" style="background-color: rgba(253, 231, 0, 1);"></div>
+            <div>Moderate Vegetation</div>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color" style="background-color: rgba(1, 255, 31, 1);"></div>
+            <div>High Vegetation</div>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color" style="background-color: rgba(1, 108, 31, 1);"></div>
+            <div>Very High Vegetation</div>
+          </div>
+        </div>
+      `;
+
+      // Add Custom Legend to the View
+      const customLegend = document.createElement("div");
+      customLegend.innerHTML = legendHTML;
+      view.container.appendChild(customLegend);
+
+      // Time Slider
+      const timeSlider = new TimeSlider({
+        container: "timeSlider",
+        view: view,
+        timeVisible: true, // show the time stamps on the time slider
+        loop: true
+      });
+
+      // Setup Time Slider for the imagery layer (if it supports time)
+      view.whenLayerView(imagery).then((layerView) => {
+        if (imagery.timeInfo) {
+          timeSlider.fullTimeExtent = imagery.timeInfo.fullTimeExtent; // Set the full extent of time data
+          timeSlider.stops = {
+            interval: {
+              value: 1,
+              unit: "months"
+            }
+          };
+        }
+      });
+
+      // Error handling for loading issues
+      view.when(() => {
+        console.log("Map and layers loaded successfully.");
+      }).catch(err => {
+        console.error("Error loading the map or layers: ", err);
+      });
+    });
+  </script>
+</head>
+
+<body>
+  <div id="viewDiv"></div>
+  <div id="timeSlider"></div>
+</body>
+
+</html>
+
+
+/* <!-- <html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Load a basic WebMap | Sample | ArcGIS Maps SDK for JavaScript 4.30</title>
+
+  <style>
+    html,
+    body,
+    #viewDiv {
+      padding: 0;
+      margin: 0;
+      height: 100%;
+      width: 100%;
+    }
+
+    #timeSlider {
+      position: absolute;
+      left: 5%;
+      right: 5%;
+      bottom: 20px;
+    }
+  </style>
+
+  <link rel="stylesheet" href="https://js.arcgis.com/4.30/esri/themes/light/main.css" />
+
+  <script src="https://js.arcgis.com/4.30/"></script>
+
+  <script>
+    require([
+      "esri/Map",
+      "esri/views/MapView",
+      "esri/layers/ImageryLayer",
+      "esri/layers/support/RasterFunction",
+      "esri/layers/support/MosaicRule",
+      "esri/widgets/Legend",
+      "esri/widgets/Expand"
+    ], function (Map, MapView, ImageryLayer, RasterFunction, MosaicRule, Legend, Expand) {
+
+      // Define Mosaic Rule
+      const mosaicRule = new MosaicRule({
+        ascending: true,
+        method: "center",
+        operation: "last"
+      });
+
+      // NDVI Raster Function
+      let ndviRF = new RasterFunction({
+        functionName: "BandArithmetic",
+        functionArguments: {
+          Expression: "(B8 - B4) / (B8 + B4)",
+          Variables: {
+            B8: "$$Bands[8]",  // NIR band
+            B4: "$$Bands[4]"   // Red band
+          }
+        },
+        outputPixelType: "F32"
+      });
+
+      // Remap Raster Function
+      let remapRF = new RasterFunction();
+      remapRF.functionName = "Remap";
+      remapRF.functionArguments = {
+        InputRanges: [-1000, 0, 0, 0.33, 0.33, 0.66, 0.66, 1000],
+        OutputValues: [0, 1, 2, 3],
+        Raster: ndviRF  // Apply remap to NDVI function
+      };
+
+      // Colormap Function
+      const colorRF = new RasterFunction({
+        functionName: "Colormap",
+        functionArguments: {
+          colormap: [
+            [0, 250, 0, 0],
+            [1, 253, 231, 0],
+            [2, 1, 255, 31],
+            [3, 1, 108, 31]
+          ],
+          raster: remapRF
+        },
+        outputPixelType: "U8"
+      });
+
+      // Imagery Layer with raster functions
+      const imagery = new ImageryLayer({
+        url: "https://remotesensing.imagery.esri.com/image/rest/services/PineBeetle_2/ImageServer",
+        rasterFunction: colorRF,
+        mosaicRule: mosaicRule,
+        visible: true
+      });
+
+      // Create Map
+      const map = new Map({
+        basemap: "topo-vector",
+        layers: [imagery]
+      });
+
+      // Create MapView
+      const view = new MapView({
+        container: "viewDiv",
+        map: map,
+        zoom: 10,
+        center: [-120.4, 56.5]
+      });
+
+      // Add Legend
+      const legend = new Legend({ view: view });
+      const legendExpand = new Expand({
+        view: view,
+        content: legend
+      });
+      view.ui.add(legendExpand, "top-left");
+
+      // Error handling for loading issues
+      view.when(() => {
+        console.log("Map and layers loaded successfully.");
+      }).catch(err => {
+        console.error("Error loading the map or layers: ", err);
+      });
+    });
+
+
+    const cut_block = new FeatureLayer({
+      url: "https://remotesensing.imagery.esri.com/server/rest/services/Hosted/Cut_Block_all_BC/FeatureServer"
+    });
+
+    const all_beetles = new FeatureLayer({
+      url: "https://remotesensing.imagery.esri.com/server/rest/services/Hosted/pest_infestation_poly__All_beetles_2021_/FeatureServer"
+    })
+
+    const pine_beetles = new FeatureLayer({
+      url: "https://remotesensing.imagery.esri.com/server/rest/services/Hosted/pest_infestation_poly__Mt_Pine_Beetle_2008_/FeatureServer"
+    })
+
+    // Create Map
+    const map = new Map({
+      basemap: "topo-vector",
+      layers: [imagery, cut_block, all_beetles, pine_beetles]
+    });
+
+    const view = new MapView({
+      container: "viewDiv",
+      map: map,
+      zoom: 10,
+      center: [-120.4, 56.5]
+    });
+
+    const legend = new Legend({
+      view: view
+    });
+    const legendExpand = new Expand({
+      expandIcon: "legend",
+      expandTooltip: "Legend",
+      view: view,
+      content: legend,
+      expanded: false
+    });
+    view.ui.add(legendExpand, "top-left");
+
+    // time slider widget initialization
+    const timeSlider = new TimeSlider({
+      container: "timeSlider",
+      view: view,
+      timeVisible: true, // show the time stamps on the timeslider
+      loop: true
+    });
+
+    view.whenLayerView(layer).then((lv) => {
+      // around up the full time extent to full hour
+      timeSlider.fullTimeExtent = layer.timeInfo.fullTimeExtent.expandTo("hours");
+      timeSlider.stops = {
+        interval: layer.timeInfo.interval
+      };
+    });
+    
+
+  </script>
+</head>
+
+<body>
+  <div id="viewDiv"></div>
+  <div id="timeSlider"></div>
+</body>
+
+</html> --> */
